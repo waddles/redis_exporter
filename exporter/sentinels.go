@@ -116,6 +116,11 @@ func (e *Exporter) extractSentinelConfig(ch chan<- prometheus.Metric, c redis.Co
 	log.Debugf("Sentinel config: %v", sentinelConfig)
 
 	for strKey, strVal := range sentinelConfig {
+		// Apply the same redaction policy as the main config metrics so that
+		// credentials are never exported via the sentinel config.
+		if shouldRedactConfigKey(strKey, e.options.RedactConfigMetrics) {
+			continue
+		}
 		e.registerConstMetricGauge(ch, "sentinel_config_key_value", 1.0, strKey, strVal)
 		if val, err := strconv.ParseFloat(strVal, 64); err == nil {
 			e.registerConstMetricGauge(ch, "sentinel_config_value", val, strKey)

@@ -50,11 +50,11 @@ func (e *Exporter) lookupPasswordInPasswordMap(uri string) (string, bool) {
 		u.User = url.User(e.options.User)
 	}
 	uri = u.String()
-
 	// strip solo ":" if present in uri that has a username (and no pwd)
 	uri = strings.Replace(uri, fmt.Sprintf(":@%s", u.Host), fmt.Sprintf("@%s", u.Host), 1)
 
-	log.Debugf("looking up in pwd map, uri: %s", uri)
+	// log the redacted form so a password embedded in the address is not written to the logs
+	log.Debugf("looking up in pwd map, uri: %s", u.Redacted())
 	if pwd, ok := e.options.PasswordMap[uri]; ok && pwd != "" {
 		return pwd, true
 	}

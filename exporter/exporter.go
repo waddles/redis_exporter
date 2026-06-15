@@ -701,6 +701,60 @@ func (e *Exporter) Collect(ch chan<- prometheus.Metric) {
 	ch <- e.targetScrapeRequestErrors
 }
 
+// alwaysRedactedConfigKeys holds config keys whose values are credentials. They
+// are never exported as metrics, regardless of the --redact-config-metrics
+// setting, so that an attacker cannot read them from /metrics even when an
+// operator has turned redaction off.
+var alwaysRedactedConfigKeys = map[string]struct{}{
+	"masterauth":               {},
+	"requirepass":              {},
+	"tls-key-file-pass":        {},
+	"tls-client-key-file-pass": {},
+}
+
+// alwaysRedactedKeySubstrings is a defense-in-depth backstop: any config key
+// containing one of these substrings is treated as credential-bearing and is
+// never exported. This keeps secret-holding keys introduced by future Redis
+// versions or forks from leaking before they are added to the list above.
+var alwaysRedactedKeySubstrings = []string{"password", "passwd", "secret", "token"}
+
+// optionallyRedactedConfigKeys holds keys that are not secrets themselves but
+// can help an attacker (e.g. usernames). They are exported only when redaction
+// is explicitly disabled via --redact-config-metrics=false (for debugging).
+var optionallyRedactedConfigKeys = map[string]struct{}{
+	"user":       {},
+	"masteruser": {},
+}
+
+// isAlwaysSecretConfigKey reports whether key always holds a credential. key is
+// expected to be already normalized (lower-cased and trimmed).
+func isAlwaysSecretConfigKey(key string) bool {
+	if _, ok := alwaysRedactedConfigKeys[key]; ok {
+		return true
+	}
+	for _, substr := range alwaysRedactedKeySubstrings {
+		if strings.Contains(key, substr) {
+			return true
+		}
+	}
+	return false
+}
+
+// shouldRedactConfigKey reports whether the value for key must be withheld from
+// exported metrics. Credentials are always withheld; other sensitive keys are
+// withheld only when redaction is enabled.
+func shouldRedactConfigKey(key string, redactEnabled bool) bool {
+	key = strings.ToLower(strings.TrimSpace(key))
+	if isAlwaysSecretConfigKey(key) {
+		return true
+	}
+	if redactEnabled {
+		_, ok := optionallyRedactedConfigKeys[key]
+		return ok
+	}
+	return false
+}
+
 func (e *Exporter) extractConfigMetrics(ch chan<- prometheus.Metric, config map[string]string) (dbCount int, err error) {
 	for strKey, strVal := range config {
 		if strKey == "databases" {
@@ -709,17 +763,14 @@ func (e *Exporter) extractConfigMetrics(ch chan<- prometheus.Metric, config map[
 			}
 		}
 
-		if e.options.InclConfigMetrics {
-			if redact := map[string]bool{
-				"masterauth":               true,
-				"requirepass":              true,
-				"tls-key-file-pass":        true,
-				"tls-client-key-file-pass": true,
-			}[strKey]; !redact || !e.options.RedactConfigMetrics {
-				e.registerConstMetricGauge(ch, "config_key_value", 1.0, strKey, strVal)
-				if val, err := strconv.ParseFloat(strVal, 64); err == nil {
-					e.registerConstMetricGauge(ch, "config_value", val, strKey)
-				}
+		// Redacted keys are not exported at all (no placeholder value is sent).
+		// Credentials are never exported; usernames and similar keys are
+		// exported only when redaction is explicitly disabled via
+		// --redact-config-metrics=false.
+		if e.options.InclConfigMetrics && !shouldRedactConfigKey(strKey, e.options.RedactConfigMetrics) {
+			e.registerConstMetricGauge(ch, "config_key_value", 1.0, strKey, strVal)
+			if val, err := strconv.ParseFloat(strVal, 64); err == nil {
+				e.registerConstMetricGauge(ch, "config_value", val, strKey)
 			}
 		}
 
