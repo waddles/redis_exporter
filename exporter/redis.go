@@ -11,12 +11,60 @@ import (
 	log "github.com/sirupsen/logrus"
 )
 
-func (e *Exporter) configureOptions(uri string, useTLS bool) ([]redis.DialOption, error) {
+// schemeIsTLS reports whether a redis URI uses a TLS scheme.
+func schemeIsTLS(uri string) bool {
+	return strings.HasPrefix(uri, "rediss://") || strings.HasPrefix(uri, "valkeys://")
+}
+
+// schemeFromURI returns the URI scheme (redis, rediss, valkey, valkeys),
+// defaulting to "redis" when no recognised scheme prefix is present.
+func schemeFromURI(uri string) string {
+	// "valkeys" before "valkey" and "rediss" before "redis" so the longer
+	// (TLS) prefixes win.
+	for _, s := range []string{"rediss", "valkeys", "valkey", "redis"} {
+		if strings.HasPrefix(uri, s+"://") {
+			return s
+		}
+	}
+	return "redis"
+}
+
+// startupNodeFromURI strips the scheme from a redis URI and returns a
+// host:port string suitable for redisc.Cluster.StartupNodes, defaulting the
+// port to 6379 when absent. Callers must pass a URI that includes a scheme.
+func startupNodeFromURI(uri string) (string, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
-		return nil, fmt.Errorf("could not parse redis uri: %w", err)
+		return "", fmt.Errorf("failed to parse cluster URI: %w", err)
 	}
-	tlsConfig, err := e.CreateClientTLSConfig(u.Hostname())
+	if u.Port() == "" {
+		return u.Host + ":6379", nil
+	}
+	return u.Host, nil
+}
+
+// canonicalPasswordKey normalises a redis URI to the form used as a key in the
+// password maps: the user from options is applied and a bare ":" left by a
+// username-without-password is stripped. The same normalisation must be used
+// when caching and looking up passwords so the keys match.
+func (e *Exporter) canonicalPasswordKey(uri string) (string, error) {
+	u, err := url.Parse(uri)
+	if err != nil {
+		return "", err
+	}
+
+	if e.options.User != "" {
+		u.User = url.User(e.options.User)
+	}
+	key := u.String()
+
+	// strip solo ":" if present in uri that has a username (and no pwd)
+	key = strings.Replace(key, fmt.Sprintf(":@%s", u.Host), fmt.Sprintf("@%s", u.Host), 1)
+	return key, nil
+}
+
+func (e *Exporter) configureOptions(uri string, useTLS bool) ([]redis.DialOption, error) {
+	tlsConfig, err := e.CreateClientTLSConfig()
 	if err != nil {
 		return nil, err
 	}
@@ -45,28 +93,20 @@ func (e *Exporter) configureOptions(uri string, useTLS bool) ([]redis.DialOption
 }
 
 func (e *Exporter) lookupPasswordInPasswordMap(uri string) (string, bool) {
-	u, err := url.Parse(uri)
+	key, err := e.canonicalPasswordKey(uri)
 	if err != nil {
 		return "", false
 	}
 
-	if e.options.User != "" {
-		u.User = url.User(e.options.User)
-	}
-	uri = u.String()
-
-	// strip solo ":" if present in uri that has a username (and no pwd)
-	uri = strings.Replace(uri, fmt.Sprintf(":@%s", u.Host), fmt.Sprintf("@%s", u.Host), 1)
-
-	log.Debugf("looking up in pwd map, uri: %s", uri)
-	if pwd, ok := e.options.PasswordMap[uri]; ok && pwd != "" {
+	log.Debugf("looking up in pwd map, uri: %s", key)
+	if pwd, ok := e.options.PasswordMap[key]; ok && pwd != "" {
 		return pwd, true
 	}
 
 	e.DiscoveredNodesPasswordsMutex.Lock()
 	defer e.DiscoveredNodesPasswordsMutex.Unlock()
-	if pwd, ok := e.DiscoveredNodesPasswords[uri]; ok && pwd != "" {
-		log.Debugf("found password for discovered node %s", uri)
+	if pwd, ok := e.DiscoveredNodesPasswords[key]; ok && pwd != "" {
+		log.Debugf("found password for discovered node %s", key)
 		return pwd, true
 	}
 
@@ -79,7 +119,7 @@ func (e *Exporter) connectToRedis() (redis.Conn, error) {
 		uri = "redis://" + uri
 	}
 
-	options, err := e.configureOptions(uri, strings.HasPrefix(uri, "rediss://") || strings.HasPrefix(uri, "valkeys://"))
+	options, err := e.configureOptions(uri, schemeIsTLS(uri))
 	if err != nil {
 		return nil, err
 	}
@@ -100,55 +140,7 @@ func (e *Exporter) connectToRedis() (redis.Conn, error) {
 }
 
 func (e *Exporter) connectToRedisCluster() (redis.Conn, error) {
-	uri := e.redisAddr
-	if !strings.Contains(uri, "://") {
-		uri = "redis://" + uri
-	}
-
-	options, err := e.configureOptions(uri, strings.HasPrefix(uri, "rediss://") || strings.HasPrefix(uri, "valkeys://"))
-	if err != nil {
-		return nil, err
-	}
-
-	// remove url scheme for redis.Cluster.StartupNodes
-	if strings.Contains(uri, "://") {
-		u, _ := url.Parse(uri)
-		if u.Port() == "" {
-			uri = u.Host + ":6379"
-		} else {
-			uri = u.Host
-		}
-	} else {
-		if frags := strings.Split(uri, ":"); len(frags) != 2 {
-			uri = uri + ":6379"
-		}
-	}
-
-	log.Debugf("Creating cluster object")
-	cluster := redisc.Cluster{
-		StartupNodes: []string{uri},
-		DialOptions:  options,
-	}
-	log.Debugf("Running refresh on cluster object")
-	if err := cluster.Refresh(); err != nil {
-		log.Errorf("Cluster refresh failed: %v", err)
-		return nil, fmt.Errorf("cluster refresh failed: %w", err)
-	}
-
-	log.Debugf("Creating redis connection object")
-	conn, err := cluster.Dial()
-	if err != nil {
-		log.Errorf("Dial failed: %v", err)
-		return nil, fmt.Errorf("dial failed: %w", err)
-	}
-
-	c, err := redisc.RetryConn(conn, 10, 100*time.Millisecond)
-	if err != nil {
-		log.Errorf("RetryConn failed: %v", err)
-		return nil, fmt.Errorf("retryConn failed: %w", err)
-	}
-
-	return c, err
+	return e.connectToRedisClusterWithURI(e.redisAddr)
 }
 
 func (e *Exporter) connectToRedisClusterWithURI(uri string) (redis.Conn, error) {
@@ -156,24 +148,15 @@ func (e *Exporter) connectToRedisClusterWithURI(uri string) (redis.Conn, error) 
 		uri = "redis://" + uri
 	}
 
-	options, err := e.configureOptions(uri, strings.HasPrefix(uri, "rediss://") || strings.HasPrefix(uri, "valkeys://"))
+	options, err := e.configureOptions(uri, schemeIsTLS(uri))
 	if err != nil {
 		return nil, err
 	}
 
 	// remove url scheme for redis.Cluster.StartupNodes
-	startupNode := uri
-	if strings.Contains(startupNode, "://") {
-		u, _ := url.Parse(startupNode)
-		if u.Port() == "" {
-			startupNode = u.Host + ":6379"
-		} else {
-			startupNode = u.Host
-		}
-	} else {
-		if frags := strings.Split(startupNode, ":"); len(frags) != 2 {
-			startupNode = startupNode + ":6379"
-		}
+	startupNode, err := startupNodeFromURI(uri)
+	if err != nil {
+		return nil, err
 	}
 
 	log.Debugf("Creating cluster object")

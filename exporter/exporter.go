@@ -71,6 +71,7 @@ type Options struct {
 	ClientCertFile                 string
 	ClientKeyFile                  string
 	CaCertFile                     string
+	TlsServerName                  string
 	InclConfigMetrics              bool
 	InclModulesMetrics             bool
 	InclSearchIndexesMetrics       bool

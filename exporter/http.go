@@ -99,6 +99,11 @@ func (e *Exporter) scrapeHandler(w http.ResponseWriter, r *http.Request) {
 		opts.CountKeys = cntk
 	}
 
+	// SNI is per-target: default to per-host (empty => redigo uses the dial
+	// host) so discovered cluster nodes each validate against their own cert,
+	// with an explicit override for proxy/cert mismatch cases.
+	opts.TlsServerName = r.URL.Query().Get("tls-server-name")
+
 	opts.Registry = prometheus.NewRegistry()
 
 	_, err = NewRedisExporter(target, opts)
@@ -118,15 +123,14 @@ func (e *Exporter) discoverClusterNodesHandler(w http.ResponseWriter, r *http.Re
 	var c redis.Conn
 	var err error
 
-	// Store the original scheme for output
-	originalScheme := "redis" // Default to redis
-	if strings.HasPrefix(target, "rediss://") {
-		originalScheme = "rediss"
-	} else if strings.HasPrefix(target, "valkey://") {
-		originalScheme = "valkey"
-	} else if strings.HasPrefix(target, "valkeys://") {
-		originalScheme = "valkeys"
+	// Preserve the original scheme for the discovery output. For the no-target
+	// path fall back to the exporter's own address so a rediss:// cluster keeps
+	// emitting rediss:// nodes.
+	schemeSource := target
+	if schemeSource == "" {
+		schemeSource = e.redisAddr
 	}
+	originalScheme := schemeFromURI(schemeSource)
 
 	if target == "" {
 		if !e.options.IsCluster {
@@ -155,8 +159,15 @@ func (e *Exporter) discoverClusterNodesHandler(w http.ResponseWriter, r *http.Re
 			e.DiscoveredNodesPasswordsMutex.Lock()
 			for _, node := range nodes {
 				nodeAddr := fmt.Sprintf("%s://%s", originalScheme, node)
-				e.DiscoveredNodesPasswords[nodeAddr] = password
-				log.Debugf("Cached password for discovered node: %s", nodeAddr)
+				// Use the same key normalisation as the lookup so a scrape of
+				// the discovered node finds this entry (e.g. when --redis-user
+				// injects a username into the lookup URI).
+				key, err := e.canonicalPasswordKey(nodeAddr)
+				if err != nil {
+					continue
+				}
+				e.DiscoveredNodesPasswords[key] = password
+				log.Debugf("Cached password for discovered node: %s", key)
 			}
 			e.DiscoveredNodesPasswordsMutex.Unlock()
 		}
@@ -201,6 +212,13 @@ func (e *Exporter) reloadPwdFile(w http.ResponseWriter, r *http.Request) {
 	e.Lock()
 	e.options.PasswordMap = passwordMap
 	e.Unlock()
+
+	// Invalidate cached discovered-node passwords so rotated credentials are
+	// not served from stale entries after a reload.
+	e.DiscoveredNodesPasswordsMutex.Lock()
+	e.DiscoveredNodesPasswords = make(map[string]string)
+	e.DiscoveredNodesPasswordsMutex.Unlock()
+
 	_, _ = w.Write([]byte(`ok`))
 }
 

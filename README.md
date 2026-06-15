@@ -110,6 +110,15 @@ scrape_configs:
         - <<REDIS-EXPORTER-HOSTNAME>>:9121
 ```
 
+The `/scrape` endpoint accepts a few per-target query parameters that override the
+exporter's defaults for that request: `check-keys`, `check-single-keys`,
+`check-streams`, `check-single-streams`, `count-keys`, and `tls-server-name`.
+For TLS targets (`rediss://` / `valkeys://`) the SNI server name defaults to the
+target's own host, so each host is validated against its own certificate. Set
+`tls-server-name` only when the certificate's name differs from the host you
+connect to (for example when scraping through a proxy or by IP address):
+`…/scrape?target=rediss://10.0.0.5:6379&tls-server-name=redis.internal`.
+
 The Redis instances are listed under `targets`, the Redis exporter hostname is configured via the last relabel_config rule.\
 If authentication is needed for the Redis instances then you can set the password via the `--redis.password` command line option of
 the exporter (this means you can currently only use one password across the instances you try to scrape this way. Use several
@@ -156,6 +165,7 @@ Prometheus uses file watches and all changes to the json file are applied immedi
 
 When using a Redis Cluster, the exporter provides a discovery endpoint that can be used to discover all nodes in the cluster.
 To use this feature, pass the cluster configuration endpoint as the target parameter. Nodes discovered will subsequently be scraped for metrics using the same scheme and authentication credentials used for the discovery.
+For a TLS cluster (`rediss://` / `valkeys://`) each discovered node is scraped over TLS and validated against its own certificate (the SNI server name defaults to the node's host), so no extra TLS configuration is needed; use the `tls-server-name` `/scrape` parameter only if a node's certificate name differs from its address.
 The discovery endpoint is available at `/discover-cluster-nodes` and can be used in the Prometheus configuration like this:
 
 ```yaml

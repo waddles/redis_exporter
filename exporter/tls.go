@@ -10,10 +10,10 @@ import (
 )
 
 // CreateClientTLSConfig verifies configured files and return a prepared tls.Config
-func (e *Exporter) CreateClientTLSConfig(serverName string) (*tls.Config, error) {
+func (e *Exporter) CreateClientTLSConfig() (*tls.Config, error) {
 	tlsConfig := tls.Config{
 		InsecureSkipVerify: e.options.SkipTLSVerification,
-		ServerName:         serverName,
+		ServerName:         e.options.TlsServerName,
 	}
 
 	if e.options.ClientCertFile != "" && e.options.ClientKeyFile != "" {
