@@ -65,7 +65,15 @@ func (e *Exporter) scrapeHandler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Copy options under the lock that guards PasswordMap writes (reloadPwdFile),
+	// so a concurrent reload can't race this struct copy.
+	e.passwordUpdateMutex.Lock()
 	opts := e.options
+	e.passwordUpdateMutex.Unlock()
+
+	if pwd, ok := e.lookupPasswordInPasswordMap(target); ok {
+		opts.Password = pwd
+	}
 
 	// get rid of username/password info in "target" so users don't send them in plain text via http
 	// and save "user" in options so we can use it later when connecting to the redis instance
@@ -192,6 +200,25 @@ func (e *Exporter) discoverClusterNodesHandler(w http.ResponseWriter, r *http.Re
 		return
 	}
 
+	if target != "" {
+		if password, ok := e.lookupPasswordInPasswordMap(target); ok {
+			e.passwordUpdateMutex.Lock()
+			for _, node := range nodes {
+				nodeAddr := fmt.Sprintf("%s://%s", originalScheme, node)
+				// Use the same key normalisation as the lookup so a scrape of
+				// the discovered node finds this entry (e.g. when --redis-user
+				// injects a username into the lookup URI).
+				key, err := e.canonicalPasswordKey(nodeAddr)
+				if err != nil {
+					continue
+				}
+				e.discoveredNodesPasswordCache[key] = password
+				log.Debugf("Cached password for discovered node: %s", key)
+			}
+			e.passwordUpdateMutex.Unlock()
+		}
+	}
+
 	discovery := []struct {
 		Targets []string          `json:"targets"`
 		Labels  map[string]string `json:"labels"`
@@ -228,9 +255,15 @@ func (e *Exporter) reloadPwdFile(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "failed to reload passwords file: "+err.Error(), http.StatusInternalServerError)
 		return
 	}
-	e.Lock()
+	// Swap in the new map and invalidate cached discovered-node passwords under
+	// the same lock that guards reads in lookupPasswordInPasswordMap, so a
+	// concurrent scrape never races the reload and rotated credentials are not
+	// served from stale entries.
+	e.passwordUpdateMutex.Lock()
 	e.options.PasswordMap = passwordMap
-	e.Unlock()
+	e.discoveredNodesPasswordCache = make(map[string]string)
+	e.passwordUpdateMutex.Unlock()
+
 	_, _ = w.Write([]byte(`ok`))
 }
 

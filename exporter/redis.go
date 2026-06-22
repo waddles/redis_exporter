@@ -72,24 +72,49 @@ func (e *Exporter) configureOptions(uri string) ([]redis.DialOption, error) {
 	return options, nil
 }
 
-func (e *Exporter) lookupPasswordInPasswordMap(uri string) (string, bool) {
+// canonicalPasswordKey normalises a redis URI to the form used as a key in the
+// password maps: the user from options is applied and a bare ":" left by a
+// username-without-password is stripped. The same normalisation must be used
+// when caching and looking up passwords so the keys match.
+func (e *Exporter) canonicalPasswordKey(uri string) (string, error) {
 	u, err := url.Parse(uri)
 	if err != nil {
-		return "", false
+		return "", err
 	}
 
 	if e.options.User != "" {
 		u.User = url.User(e.options.User)
 	}
-	uri = u.String()
+	key := u.String()
 
 	// strip solo ":" if present in uri that has a username (and no pwd)
-	uri = strings.Replace(uri, fmt.Sprintf(":@%s", u.Host), fmt.Sprintf("@%s", u.Host), 1)
+	key = strings.Replace(key, fmt.Sprintf(":@%s", u.Host), fmt.Sprintf("@%s", u.Host), 1)
+	return key, nil
+}
 
-	log.Debugf("looking up in pwd map, uri: %s", uri)
-	if pwd, ok := e.options.PasswordMap[uri]; ok && pwd != "" {
+func (e *Exporter) lookupPasswordInPasswordMap(uri string) (string, bool) {
+	key, err := e.canonicalPasswordKey(uri)
+	if err != nil {
+		return "", false
+	}
+
+	log.Debugf("looking up in pwd map, uri: %s", key)
+
+	// Guards both PasswordMap and discoveredNodesPasswordCache against a concurrent
+	// reloadPwdFile. Not the embedded e.Mutex: Collect holds that across a whole
+	// scrape, and the scrape path reaches this lookup.
+	e.passwordUpdateMutex.Lock()
+	defer e.passwordUpdateMutex.Unlock()
+
+	if pwd, ok := e.options.PasswordMap[key]; ok && pwd != "" {
 		return pwd, true
 	}
+
+	if pwd, ok := e.discoveredNodesPasswordCache[key]; ok && pwd != "" {
+		log.Debugf("found password for discovered node %s", key)
+		return pwd, true
+	}
+
 	return "", false
 }
 
