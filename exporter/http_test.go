@@ -923,8 +923,9 @@ func TestDiscoverClusterNodesHandlerWithTarget(t *testing.T) {
 			}
 
 			e, _ := NewRedisExporter("", Options{
-				Namespace:   "test",
-				PasswordMap: passwordMap,
+				Namespace:                      "test",
+				PasswordMap:                    passwordMap,
+				ClusterDiscoverTargetAllowlist: "localhost",
 			})
 			ts := httptest.NewServer(e)
 			defer ts.Close()
@@ -1029,12 +1030,13 @@ func TestDiscoverClusterNodesHandlerTLS(t *testing.T) {
 			}
 
 			e, _ := NewRedisExporter("", Options{
-				Namespace:           "test",
-				PasswordMap:         passwordMap,
-				SkipTLSVerification: true,
-				ClientCertFile:      "../contrib/tls/redis.crt",
-				ClientKeyFile:       "../contrib/tls/redis.key",
-				CaCertFile:          "../contrib/tls/ca.crt",
+				Namespace:                      "test",
+				PasswordMap:                    passwordMap,
+				SkipTLSVerification:            true,
+				ClientCertFile:                 "../contrib/tls/redis.crt",
+				ClientKeyFile:                  "../contrib/tls/redis.key",
+				CaCertFile:                     "../contrib/tls/ca.crt",
+				ClusterDiscoverTargetAllowlist: "localhost",
 			})
 			ts := httptest.NewServer(e)
 			defer ts.Close()
@@ -1101,7 +1103,7 @@ func TestDiscoverClusterNodesHandlerAuthFail(t *testing.T) {
 		t.Skipf("TEST_VALKEY_CLUSTER_PASSWORD_URI not set - skipping")
 	}
 
-	e, _ := NewRedisExporter("", Options{Namespace: "test"})
+	e, _ := NewRedisExporter("", Options{Namespace: "test", ClusterDiscoverTargetAllowlist: "localhost"})
 	ts := httptest.NewServer(e)
 	defer ts.Close()
 
@@ -1117,5 +1119,50 @@ func TestDiscoverClusterNodesHandlerAuthFail(t *testing.T) {
 
 	if !strings.Contains(body, "NOAUTH Authentication required") {
 		t.Errorf("expected error message, got: %s", body)
+	}
+}
+
+// TestTargetAllowedForDiscovery covers the allowlist glob matching directly,
+// including that URI userinfo cannot spoof the host. No live Redis needed.
+func TestTargetAllowedForDiscovery(t *testing.T) {
+	const clusterGlob = "clustercfg.*.example.com"
+	for _, tc := range []struct {
+		name      string
+		allowlist string
+		target    string
+		want      bool
+	}{
+		{"empty allowlist disables", "", "redis://clustercfg.mycache.example.com:6379", false},
+		{"glob matches", clusterGlob, "rediss://clustercfg.mycache.example.com:6379", true},
+		{"glob no match", clusterGlob, "redis://evil.example.org:6379", false},
+		{"userinfo cannot spoof host", clusterGlob, "redis://clustercfg.x.example.com@evil.example.org:6379", false},
+		{"no scheme is ok", "localhost", "localhost:6379", true},
+		{"one of several globs matches", "foo.example.com, " + clusterGlob, "redis://clustercfg.x.example.com:6379", true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			e, _ := NewRedisExporter("", Options{ClusterDiscoverTargetAllowlist: tc.allowlist})
+			if got := e.targetAllowedForDiscovery(tc.target); got != tc.want {
+				t.Errorf("targetAllowedForDiscovery(%q) with allowlist %q = %v, want %v", tc.target, tc.allowlist, got, tc.want)
+			}
+		})
+	}
+}
+
+// TestDiscoverClusterNodesHandlerTargetForbidden verifies the endpoint refuses a
+// caller-supplied target when the allowlist is empty, before any connection is
+// attempted. No live Redis needed.
+func TestDiscoverClusterNodesHandlerTargetForbidden(t *testing.T) {
+	e, _ := NewRedisExporter("", Options{Namespace: "test"})
+	ts := httptest.NewServer(e)
+	defer ts.Close()
+
+	u, _ := url.Parse(ts.URL + "/discover-cluster-nodes")
+	q := u.Query()
+	q.Set("target", "redis://clustercfg.mycache.example.com:6379")
+	u.RawQuery = q.Encode()
+
+	statusCode, _ := downloadURLWithStatusCode(t, u.String())
+	if statusCode != http.StatusForbidden {
+		t.Errorf("expected status code 403 with empty allowlist, got %d", statusCode)
 	}
 }

@@ -84,6 +84,7 @@ type Options struct {
 	IsTile38                       bool
 	IsCluster                      bool
 	ClusterDiscoverHostnames       bool
+	ClusterDiscoverTargetAllowlist string
 	ExportClientList               bool
 	ExportClientsInclPort          bool
 	ConnectionTimeouts             time.Duration

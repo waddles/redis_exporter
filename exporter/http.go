@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"path"
 	"strings"
 
 	"github.com/gomodule/redigo/redis"
@@ -115,6 +116,42 @@ func (e *Exporter) scrapeHandler(w http.ResponseWriter, r *http.Request) {
 	).ServeHTTP(w, r)
 }
 
+// targetAllowedForDiscovery reports whether a caller-supplied discovery target
+// is permitted by --cluster-discover-target-allowlist. The allowlist is a
+// comma-separated list of globs (path.Match syntax) matched against the target
+// host (port and scheme stripped). An empty allowlist disables target-based
+// discovery entirely, so the exporter will not probe arbitrary addresses unless
+// explicitly configured to.
+func (e *Exporter) targetAllowedForDiscovery(target string) bool {
+	if strings.TrimSpace(e.options.ClusterDiscoverTargetAllowlist) == "" {
+		return false
+	}
+
+	uri := target
+	if !strings.Contains(uri, "://") {
+		uri = "redis://" + uri
+	}
+	u, err := url.Parse(uri)
+	if err != nil {
+		return false
+	}
+	host := u.Hostname()
+	if host == "" {
+		return false
+	}
+
+	for _, pattern := range strings.Split(e.options.ClusterDiscoverTargetAllowlist, ",") {
+		pattern = strings.TrimSpace(pattern)
+		if pattern == "" {
+			continue
+		}
+		if ok, err := path.Match(pattern, host); err == nil && ok {
+			return true
+		}
+	}
+	return false
+}
+
 func (e *Exporter) discoverClusterNodesHandler(w http.ResponseWriter, r *http.Request) {
 	target := r.URL.Query().Get("target")
 	var c redis.Conn
@@ -136,6 +173,10 @@ func (e *Exporter) discoverClusterNodesHandler(w http.ResponseWriter, r *http.Re
 		}
 		c, err = e.connectToRedisCluster()
 	} else {
+		if !e.targetAllowedForDiscovery(target) {
+			http.Error(w, "discovery of this target is not allowed; set --cluster-discover-target-allowlist to permit it", http.StatusForbidden)
+			return
+		}
 		c, err = e.connectToRedisClusterWithURI(target)
 	}
 
