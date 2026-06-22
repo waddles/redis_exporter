@@ -1138,6 +1138,8 @@ func TestTargetAllowedForDiscovery(t *testing.T) {
 		{"userinfo cannot spoof host", clusterGlob, "redis://clustercfg.x.example.com@evil.example.org:6379", false},
 		{"no scheme is ok", "localhost", "localhost:6379", true},
 		{"one of several globs matches", "foo.example.com, " + clusterGlob, "redis://clustercfg.x.example.com:6379", true},
+		{"unparseable target denied", clusterGlob, "redis://%zz", false},
+		{"empty host denied", clusterGlob, "redis://:6379", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			e, _ := NewRedisExporter("", Options{ClusterDiscoverTargetAllowlist: tc.allowlist})
