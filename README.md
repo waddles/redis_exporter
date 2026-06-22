@@ -157,14 +157,16 @@ Prometheus uses file watches and all changes to the json file are applied immedi
 ### Prometheus Configuration to Scrape All Nodes in a Redis Cluster
 
 When using a Redis Cluster, the exporter provides a discovery endpoint that can be used to discover all nodes in the cluster.
-To use this feature, the exporter must be started with the `--is-cluster` flag.\
+This is especially useful for managed clusters such as AWS ElastiCache, where the topology changes underneath you (failover, scaling, node replacement) and you have no control over the node hostnames — so the set of nodes cannot be enumerated statically and must be discovered at scrape time.\
+To use this feature, pass the cluster configuration endpoint as the `target` parameter. Nodes discovered will subsequently be scraped for metrics using the same scheme and authentication credentials used for the discovery.
+For a TLS cluster (`rediss://` / `valkeys://`) each discovered node is scraped over TLS and validated against its own certificate (the SNI server name defaults to the node's host). When a node's certificate name differs from its address (e.g. discovery returns IPs), pass the `tls_server_name` `/scrape` parameter (via `__param_tls_server_name`).
 The discovery endpoint is available at `/discover-cluster-nodes` and can be used in the Prometheus configuration like this:
 
 ```yaml
 scrape_configs:
   - job_name: 'redis_exporter_cluster_nodes'
     http_sd_configs:
-      - url: http://<<REDIS-EXPORTER-HOSTNAME>>:9121/discover-cluster-nodes
+      - url: http://<<REDIS-EXPORTER-HOSTNAME>>:9121/discover-cluster-nodes?target=redis://clustercfg:6379
         refresh_interval: 10m
     metrics_path: /scrape
     relabel_configs:

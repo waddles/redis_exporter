@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 
+	"github.com/gomodule/redigo/redis"
 	"github.com/prometheus/client_golang/prometheus"
 	"github.com/prometheus/client_golang/prometheus/promhttp"
 	log "github.com/sirupsen/logrus"
@@ -115,12 +116,29 @@ func (e *Exporter) scrapeHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func (e *Exporter) discoverClusterNodesHandler(w http.ResponseWriter, r *http.Request) {
-	if !e.options.IsCluster {
-		http.Error(w, "The discovery endpoint is only available on a redis cluster", http.StatusBadRequest)
-		return
+	target := r.URL.Query().Get("target")
+	var c redis.Conn
+	var err error
+
+	// Preserve the original scheme for the discovery output. For the no-target
+	// path fall back to the exporter's own address so a rediss:// cluster keeps
+	// emitting rediss:// nodes.
+	schemeSource := target
+	if schemeSource == "" {
+		schemeSource = e.redisAddr
+	}
+	originalScheme := schemeFromURI(schemeSource)
+
+	if target == "" {
+		if !e.options.IsCluster {
+			http.Error(w, "The discovery endpoint is only available on a redis cluster", http.StatusBadRequest)
+			return
+		}
+		c, err = e.connectToRedisCluster()
+	} else {
+		c, err = e.connectToRedisClusterWithURI(target)
 	}
 
-	c, err := e.connectToRedisCluster()
 	if err != nil {
 		http.Error(w, fmt.Sprintf("Couldn't connect to redis cluster: %s", err), http.StatusInternalServerError)
 		return
@@ -143,13 +161,8 @@ func (e *Exporter) discoverClusterNodesHandler(w http.ResponseWriter, r *http.Re
 		},
 	}
 
-	isTls := strings.HasPrefix(e.redisAddr, "rediss://")
 	for i, node := range nodes {
-		if isTls {
-			discovery[0].Targets[i] = "rediss://" + node
-		} else {
-			discovery[0].Targets[i] = "redis://" + node
-		}
+		discovery[0].Targets[i] = fmt.Sprintf("%s://%s", originalScheme, node)
 	}
 
 	data, err := json.MarshalIndent(discovery, "", "  ")

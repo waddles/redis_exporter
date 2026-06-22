@@ -175,7 +175,7 @@ func TestVerifiedIPTargetFailsWithoutTLSServerName(t *testing.T) {
 		t.Fatalf("NewRedisExporter() err: %s", err)
 	}
 
-	options, err := e.configureOptions(redisAddr)
+	options, err := e.configureOptions(redisAddr, schemeIsTLS(redisAddr))
 	if err != nil {
 		t.Fatalf("configureOptions() err: %s", err)
 	}
