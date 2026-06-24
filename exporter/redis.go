@@ -43,7 +43,7 @@ func startupNodeFromURI(uri string) (string, error) {
 	return u.Host, nil
 }
 
-func (e *Exporter) configureOptions(uri string, useTLS bool) ([]redis.DialOption, error) {
+func (e *Exporter) configureOptions(uri string) ([]redis.DialOption, error) {
 	tlsConfig, err := e.CreateClientTLSConfig()
 	if err != nil {
 		return nil, err
@@ -54,7 +54,7 @@ func (e *Exporter) configureOptions(uri string, useTLS bool) ([]redis.DialOption
 		redis.DialReadTimeout(e.options.ConnectionTimeouts),
 		redis.DialWriteTimeout(e.options.ConnectionTimeouts),
 		redis.DialTLSConfig(tlsConfig),
-		redis.DialUseTLS(useTLS),
+		redis.DialUseTLS(schemeIsTLS(uri)),
 	}
 
 	if e.options.User != "" {
@@ -99,7 +99,7 @@ func (e *Exporter) connectToRedis() (redis.Conn, error) {
 		uri = "redis://" + uri
 	}
 
-	options, err := e.configureOptions(uri, schemeIsTLS(uri))
+	options, err := e.configureOptions(uri)
 	if err != nil {
 		return nil, err
 	}
@@ -128,7 +128,7 @@ func (e *Exporter) connectToRedisClusterWithURI(uri string) (redis.Conn, error) 
 		uri = "redis://" + uri
 	}
 
-	options, err := e.configureOptions(uri, schemeIsTLS(uri))
+	options, err := e.configureOptions(uri)
 	if err != nil {
 		return nil, err
 	}
