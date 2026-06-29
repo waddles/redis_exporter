@@ -113,7 +113,7 @@ func (e *Exporter) extractSentinelConfig(ch chan<- prometheus.Metric, c redis.Co
 		return
 	}
 
-	log.Debugf("Sentinel config: %v", sentinelConfig)
+	log.Debugf("Sentinel config: %v", redactedConfigForLog(sentinelConfig, e.options.RedactConfigMetrics))
 
 	for strKey, strVal := range sentinelConfig {
 		// Apply the same redaction policy as the main config metrics so that

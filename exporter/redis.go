@@ -40,6 +40,37 @@ func (e *Exporter) configureOptions(uri string) ([]redis.DialOption, error) {
 	return options, nil
 }
 
+// redactURI removes any embedded username and password from a redis address so
+// it is safe to write to logs. It accepts both full URIs
+// (redis://user:pass@host:port) and scheme-less authorities
+// (user:pass@host:port). If the address embeds credentials but cannot be
+// parsed, a fixed placeholder is returned rather than risk leaking the secret.
+func redactURI(uri string) string {
+	hasScheme := strings.Contains(uri, "://")
+	toParse := uri
+	if !hasScheme {
+		toParse = "redis://" + uri
+	}
+
+	u, err := url.Parse(toParse)
+	if err != nil {
+		if strings.Contains(uri, "@") {
+			return "<redacted>"
+		}
+		return uri
+	}
+	if u.User == nil {
+		return uri
+	}
+
+	u.User = nil
+	redacted := u.String()
+	if !hasScheme {
+		redacted = strings.TrimPrefix(redacted, "redis://")
+	}
+	return redacted
+}
+
 func (e *Exporter) lookupPasswordInPasswordMap(uri string) (string, bool) {
 	u, err := url.Parse(uri)
 	if err != nil {
@@ -53,8 +84,8 @@ func (e *Exporter) lookupPasswordInPasswordMap(uri string) (string, bool) {
 	// strip solo ":" if present in uri that has a username (and no pwd)
 	uri = strings.Replace(uri, fmt.Sprintf(":@%s", u.Host), fmt.Sprintf("@%s", u.Host), 1)
 
-	// log the redacted form so a password embedded in the address is not written to the logs
-	log.Debugf("looking up in pwd map, uri: %s", u.Redacted())
+	// log the redacted form so credentials embedded in the address are not written to the logs
+	log.Debugf("looking up in pwd map, uri: %s", redactURI(uri))
 	if pwd, ok := e.options.PasswordMap[uri]; ok && pwd != "" {
 		return pwd, true
 	}
@@ -72,15 +103,15 @@ func (e *Exporter) connectToRedis() (redis.Conn, error) {
 		return nil, err
 	}
 
-	log.Debugf("Trying DialURL(): %s", uri)
+	log.Debugf("Trying DialURL(): %s", redactURI(uri))
 	c, err := redis.DialURL(uri, options...)
 	if err != nil {
 		log.Debugf("DialURL() failed, err: %s", err)
 		if frags := strings.Split(e.redisAddr, "://"); len(frags) == 2 {
-			log.Debugf("Trying: Dial(): %s %s", frags[0], frags[1])
+			log.Debugf("Trying: Dial(): %s %s", frags[0], redactURI(frags[1]))
 			c, err = redis.Dial(frags[0], frags[1], options...)
 		} else {
-			log.Debugf("Trying: Dial(): tcp %s", e.redisAddr)
+			log.Debugf("Trying: Dial(): tcp %s", redactURI(e.redisAddr))
 			c, err = redis.Dial("tcp", e.redisAddr, options...)
 		}
 	}

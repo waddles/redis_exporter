@@ -1,6 +1,7 @@
 package exporter
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/prometheus/client_golang/prometheus"
@@ -21,11 +22,17 @@ func TestShouldRedactConfigKey(t *testing.T) {
 		{name: "tls-key-file-pass redaction off", key: "tls-key-file-pass", redactEnabled: false, want: true},
 		{name: "tls-client-key-file-pass redaction off", key: "tls-client-key-file-pass", redactEnabled: false, want: true},
 
+		// Sentinel credentials are always redacted, regardless of the flag.
+		{name: "sentinel-pass redaction on", key: "sentinel-pass", redactEnabled: true, want: true},
+		{name: "sentinel-pass redaction off", key: "sentinel-pass", redactEnabled: false, want: true},
+		{name: "auth-pass redaction off", key: "auth-pass", redactEnabled: false, want: true},
+
 		// Defense-in-depth substring backstop, regardless of the flag.
 		{name: "unknown password key redaction off", key: "some-new-password", redactEnabled: false, want: true},
 		{name: "unknown passwd key redaction off", key: "announce-auth-passwd", redactEnabled: false, want: true},
 		{name: "unknown secret key redaction off", key: "module-shared-secret", redactEnabled: false, want: true},
 		{name: "unknown token key redaction off", key: "auth-token", redactEnabled: false, want: true},
+		{name: "unknown pass key redaction off", key: "some-future-pass", redactEnabled: false, want: true},
 
 		// Keys are normalized before lookup so a fork returning a different
 		// casing or surrounding whitespace cannot bypass redaction.
@@ -37,6 +44,8 @@ func TestShouldRedactConfigKey(t *testing.T) {
 		{name: "user redaction off", key: "user", redactEnabled: false, want: false},
 		{name: "masteruser redaction on", key: "masteruser", redactEnabled: true, want: true},
 		{name: "masteruser redaction off", key: "masteruser", redactEnabled: false, want: false},
+		{name: "sentinel-user redaction on", key: "sentinel-user", redactEnabled: true, want: true},
+		{name: "sentinel-user redaction off", key: "sentinel-user", redactEnabled: false, want: false},
 
 		// Non-sensitive keys are never redacted.
 		{name: "appendonly redaction on", key: "appendonly", redactEnabled: true, want: false},
@@ -161,6 +170,33 @@ func TestExtractConfigMetricsRedaction(t *testing.T) {
 				if _, ok := exported[key]; ok {
 					t.Errorf("expected config_key_value{key=%q} to be withheld, but it was exported", key)
 				}
+			}
+		})
+	}
+}
+
+func TestRedactURI(t *testing.T) {
+	for _, tst := range []struct {
+		name string
+		uri  string
+		want string
+	}{
+		{name: "user and password", uri: "redis://user:s3cr3t@host:6379", want: "redis://host:6379"},
+		{name: "password only", uri: "redis://:s3cr3t@host:6379", want: "redis://host:6379"},
+		{name: "user only", uri: "redis://user@host:6379", want: "redis://host:6379"},
+		{name: "no credentials", uri: "redis://host:6379", want: "redis://host:6379"},
+		{name: "tls scheme", uri: "rediss://user:s3cr3t@host:6379", want: "rediss://host:6379"},
+		{name: "scheme-less authority with creds", uri: "user:s3cr3t@host:6379", want: "host:6379"},
+		{name: "scheme-less host only", uri: "host:6379", want: "host:6379"},
+		{name: "host with db path", uri: "redis://user:s3cr3t@host:6379/0", want: "redis://host:6379/0"},
+	} {
+		t.Run(tst.name, func(t *testing.T) {
+			if got := redactURI(tst.uri); got != tst.want {
+				t.Errorf("redactURI(%q) = %q, want %q", tst.uri, got, tst.want)
+			}
+			// A redacted URI must never leak the secret.
+			if got := redactURI(tst.uri); strings.Contains(got, "s3cr3t") {
+				t.Errorf("SECURITY FAILURE: redactURI(%q) = %q leaks the password", tst.uri, got)
 			}
 		})
 	}

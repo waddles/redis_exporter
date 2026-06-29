@@ -3,7 +3,6 @@ package exporter
 import (
 	"fmt"
 	"net/http"
-	"net/url"
 	"runtime"
 	"strconv"
 	"strings"
@@ -123,7 +122,7 @@ func NewRedisExporter(uri string, opts Options) (*Exporter, error) {
 		uri = strings.Replace(uri, "valkeys://", "rediss://", 1)
 	}
 
-	log.Debugf("NewRedisExporter = using redis uri: %s", uri)
+	log.Debugf("NewRedisExporter = using redis uri: %s", redactURI(uri))
 
 	if opts.Registry == nil {
 		opts.Registry = prometheus.NewRegistry()
@@ -710,20 +709,24 @@ var alwaysRedactedConfigKeys = map[string]struct{}{
 	"requirepass":              {},
 	"tls-key-file-pass":        {},
 	"tls-client-key-file-pass": {},
+	"sentinel-pass":            {},
+	"auth-pass":                {},
 }
 
 // alwaysRedactedKeySubstrings is a defense-in-depth backstop: any config key
 // containing one of these substrings is treated as credential-bearing and is
 // never exported. This keeps secret-holding keys introduced by future Redis
 // versions or forks from leaking before they are added to the list above.
-var alwaysRedactedKeySubstrings = []string{"password", "passwd", "secret", "token"}
+// "pass" also covers the *-pass family (e.g. sentinel-pass, auth-pass).
+var alwaysRedactedKeySubstrings = []string{"password", "passwd", "pass", "secret", "token"}
 
 // optionallyRedactedConfigKeys holds keys that are not secrets themselves but
 // can help an attacker (e.g. usernames). They are exported only when redaction
 // is explicitly disabled via --redact-config-metrics=false (for debugging).
 var optionallyRedactedConfigKeys = map[string]struct{}{
-	"user":       {},
-	"masteruser": {},
+	"user":          {},
+	"masteruser":    {},
+	"sentinel-user": {},
 }
 
 // isAlwaysSecretConfigKey reports whether key always holds a credential. key is
@@ -753,6 +756,22 @@ func shouldRedactConfigKey(key string, redactEnabled bool) bool {
 		return ok
 	}
 	return false
+}
+
+// redactedConfigForLog returns a copy of config with the values of
+// credential-bearing keys masked, so the map can be written to debug logs
+// without leaking secrets. The same policy used for the exported metrics is
+// applied here.
+func redactedConfigForLog(config map[string]string, redactEnabled bool) map[string]string {
+	out := make(map[string]string, len(config))
+	for k, v := range config {
+		if shouldRedactConfigKey(k, redactEnabled) {
+			out[k] = "<redacted>"
+		} else {
+			out[k] = v
+		}
+	}
+	return out
 }
 
 func (e *Exporter) extractConfigMetrics(ch chan<- prometheus.Metric, config map[string]string) (dbCount int, err error) {
@@ -815,20 +834,14 @@ func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
 	e.registerConstMetricGauge(ch, "exporter_last_scrape_connect_time_seconds", connectTookSeconds)
 
 	if err != nil {
-		var redactedAddr string
-		if redisURL, err2 := url.Parse(e.redisAddr); err2 != nil {
-			log.Debugf("url.Parse( %s ) err: %s", e.redisAddr, err2)
-			redactedAddr = "<redacted>"
-		} else {
-			redactedAddr = redisURL.Redacted()
-		}
+		redactedAddr := redactURI(e.redisAddr)
 		log.Errorf("Couldn't connect to redis instance (%s)", redactedAddr)
-		log.Debugf("connectToRedis( %s ) err: %s", e.redisAddr, err)
+		log.Debugf("connectToRedis( %s ) err: %s", redactedAddr, err)
 		return err
 	}
 	defer c.Close()
 
-	log.Debugf("connected to: %s", e.redisAddr)
+	log.Debugf("connected to: %s", redactURI(e.redisAddr))
 	log.Debugf("connecting took %f seconds", connectTookSeconds)
 
 	if e.options.PingOnConnect {
