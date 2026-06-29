@@ -334,7 +334,7 @@ func main() {
 	}
 
 	log.Infof("Providing metrics at %s%s", *listenAddress, *metricPath)
-	log.Debugf("Configured redis addr: %#v", *redisAddr)
+	log.Debugf("Configured redis addr: %#v", exporter.RedactURI(*redisAddr))
 	server := &http.Server{
 		Addr:    *listenAddress,
 		Handler: exp,

@@ -1,6 +1,7 @@
 package exporter
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -189,15 +190,50 @@ func TestRedactURI(t *testing.T) {
 		{name: "scheme-less authority with creds", uri: "user:s3cr3t@host:6379", want: "host:6379"},
 		{name: "scheme-less host only", uri: "host:6379", want: "host:6379"},
 		{name: "host with db path", uri: "redis://user:s3cr3t@host:6379/0", want: "redis://host:6379/0"},
+		{name: "credential in query param", uri: "redis://host:6379?password=s3cr3t", want: "redis://host:6379?password=%3Credacted%3E"},
+		{name: "non-secret query param untouched", uri: "redis://host:6379?db=0", want: "redis://host:6379?db=0"},
 	} {
 		t.Run(tst.name, func(t *testing.T) {
-			if got := redactURI(tst.uri); got != tst.want {
-				t.Errorf("redactURI(%q) = %q, want %q", tst.uri, got, tst.want)
+			if got := RedactURI(tst.uri); got != tst.want {
+				t.Errorf("RedactURI(%q) = %q, want %q", tst.uri, got, tst.want)
 			}
 			// A redacted URI must never leak the secret.
-			if got := redactURI(tst.uri); strings.Contains(got, "s3cr3t") {
-				t.Errorf("SECURITY FAILURE: redactURI(%q) = %q leaks the password", tst.uri, got)
+			if got := RedactURI(tst.uri); strings.Contains(got, "s3cr3t") {
+				t.Errorf("SECURITY FAILURE: RedactURI(%q) = %q leaks the password", tst.uri, got)
 			}
 		})
+	}
+}
+
+func TestOptionsRedactedForLog(t *testing.T) {
+	const secret = "very-secret-password"
+
+	opts := Options{
+		User:                  "redis-user", // not a secret; must be preserved
+		Password:              secret,
+		BasicAuthPassword:     secret,
+		BasicAuthHashPassword: secret,
+		PasswordMap: map[string]string{
+			"redis://user:" + secret + "@host:6379": secret,
+		},
+	}
+
+	redacted := opts.redactedForLog()
+
+	// %#v is how the options are written to the debug log.
+	if dump := fmt.Sprintf("%#v", redacted); strings.Contains(dump, secret) {
+		t.Errorf("SECURITY FAILURE: redactedForLog() leaks a credential: %s", dump)
+	}
+
+	if redacted.User != "redis-user" {
+		t.Errorf("redactedForLog() User = %q, want it preserved", redacted.User)
+	}
+
+	// The original options must not be mutated.
+	if opts.Password != secret {
+		t.Errorf("redactedForLog() mutated the original Password")
+	}
+	if _, ok := opts.PasswordMap["redis://user:"+secret+"@host:6379"]; !ok {
+		t.Errorf("redactedForLog() mutated the original PasswordMap")
 	}
 }

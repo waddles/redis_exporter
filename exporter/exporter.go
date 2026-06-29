@@ -100,6 +100,30 @@ type Options struct {
 	DisableScrapeEndpoint          bool
 }
 
+// redactedForLog returns a shallow copy of the options with every credential
+// field masked, so the options can be written to debug logs without leaking
+// secrets. Password-map keys are themselves redacted as URIs and their values
+// dropped.
+func (opts Options) redactedForLog() Options {
+	if opts.Password != "" {
+		opts.Password = "<redacted>"
+	}
+	if opts.BasicAuthPassword != "" {
+		opts.BasicAuthPassword = "<redacted>"
+	}
+	if opts.BasicAuthHashPassword != "" {
+		opts.BasicAuthHashPassword = "<redacted>"
+	}
+	if len(opts.PasswordMap) > 0 {
+		redacted := make(map[string]string, len(opts.PasswordMap))
+		for k := range opts.PasswordMap {
+			redacted[RedactURI(k)] = "<redacted>"
+		}
+		opts.PasswordMap = redacted
+	}
+	return opts
+}
+
 func getInstanceRoleFromInfo(info string) string {
 	for line := range strings.SplitSeq(info, "\n") {
 		line = strings.TrimSpace(line)
@@ -113,7 +137,7 @@ func getInstanceRoleFromInfo(info string) string {
 
 // NewRedisExporter returns a new exporter of Redis metrics.
 func NewRedisExporter(uri string, opts Options) (*Exporter, error) {
-	log.Debugf("NewRedisExporter options: %#v", opts)
+	log.Debugf("NewRedisExporter options: %#v", opts.redactedForLog())
 
 	switch {
 	case strings.HasPrefix(uri, "valkey://"):
@@ -122,7 +146,7 @@ func NewRedisExporter(uri string, opts Options) (*Exporter, error) {
 		uri = strings.Replace(uri, "valkeys://", "rediss://", 1)
 	}
 
-	log.Debugf("NewRedisExporter = using redis uri: %s", redactURI(uri))
+	log.Debugf("NewRedisExporter = using redis uri: %s", RedactURI(uri))
 
 	if opts.Registry == nil {
 		opts.Registry = prometheus.NewRegistry()
@@ -834,14 +858,14 @@ func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
 	e.registerConstMetricGauge(ch, "exporter_last_scrape_connect_time_seconds", connectTookSeconds)
 
 	if err != nil {
-		redactedAddr := redactURI(e.redisAddr)
+		redactedAddr := RedactURI(e.redisAddr)
 		log.Errorf("Couldn't connect to redis instance (%s)", redactedAddr)
 		log.Debugf("connectToRedis( %s ) err: %s", redactedAddr, err)
 		return err
 	}
 	defer c.Close()
 
-	log.Debugf("connected to: %s", redactURI(e.redisAddr))
+	log.Debugf("connected to: %s", RedactURI(e.redisAddr))
 	log.Debugf("connecting took %f seconds", connectTookSeconds)
 
 	if e.options.PingOnConnect {
