@@ -124,6 +124,15 @@ func (opts Options) redactedForLog() Options {
 	return opts
 }
 
+// redactedOptions lazily renders Options with all credential fields masked for
+// logging. The (allocating) redaction is deferred until the log entry is
+// actually emitted - i.e. only when debug logging is enabled.
+type redactedOptions struct{ opts *Options }
+
+func (r redactedOptions) String() string {
+	return fmt.Sprintf("%#v", r.opts.redactedForLog())
+}
+
 func getInstanceRoleFromInfo(info string) string {
 	for line := range strings.SplitSeq(info, "\n") {
 		line = strings.TrimSpace(line)
@@ -137,7 +146,7 @@ func getInstanceRoleFromInfo(info string) string {
 
 // NewRedisExporter returns a new exporter of Redis metrics.
 func NewRedisExporter(uri string, opts Options) (*Exporter, error) {
-	log.Debugf("NewRedisExporter options: %#v", opts.redactedForLog())
+	log.Debugf("NewRedisExporter options: %s", redactedOptions{&opts})
 
 	switch {
 	case strings.HasPrefix(uri, "valkey://"):
@@ -146,7 +155,7 @@ func NewRedisExporter(uri string, opts Options) (*Exporter, error) {
 		uri = strings.Replace(uri, "valkeys://", "rediss://", 1)
 	}
 
-	log.Debugf("NewRedisExporter = using redis uri: %s", RedactURI(uri))
+	log.Debugf("NewRedisExporter = using redis uri: %s", redactedURI(uri))
 
 	if opts.Registry == nil {
 		opts.Registry = prometheus.NewRegistry()
@@ -865,7 +874,7 @@ func (e *Exporter) scrapeRedisHost(ch chan<- prometheus.Metric) error {
 	}
 	defer c.Close()
 
-	log.Debugf("connected to: %s", RedactURI(e.redisAddr))
+	log.Debugf("connected to: %s", redactedURI(e.redisAddr))
 	log.Debugf("connecting took %f seconds", connectTookSeconds)
 
 	if e.options.PingOnConnect {

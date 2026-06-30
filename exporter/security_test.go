@@ -205,6 +205,27 @@ func TestRedactURI(t *testing.T) {
 	}
 }
 
+func TestConnectToRedisDoesNotLeakCredentialsOnFailure(t *testing.T) {
+	const secret = "super-secret-pwd"
+
+	// A scheme-less, unreachable address with embedded credentials. Without the
+	// fallback guard, connectToRedis() would call redis.Dial() with the raw
+	// "user:pass@host" string, producing an error that echoes the password -
+	// an error that is later exposed via the exporter_last_scrape_error metric.
+	e, err := NewRedisExporter("someuser:"+secret+"@127.0.0.1:1", Options{})
+	if err != nil {
+		t.Fatalf("NewRedisExporter() failed: %v", err)
+	}
+
+	_, connErr := e.connectToRedis()
+	if connErr == nil {
+		t.Fatal("expected connectToRedis() to fail against an unreachable host")
+	}
+	if strings.Contains(connErr.Error(), secret) {
+		t.Errorf("SECURITY FAILURE: connection error leaks credential: %v", connErr)
+	}
+}
+
 func TestOptionsRedactedForLog(t *testing.T) {
 	const secret = "very-secret-password"
 
